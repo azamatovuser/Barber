@@ -1,153 +1,74 @@
-import datetime
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, filters, types, F
 import asyncio
-from config import TOKEN, ADMIN, CHANNEL_ID
+from config import TOKEN
 from database import Database
-from aiogram import filters, types, F
+from buttons.reply_buttons import add_button
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from buttons.reply_buttons import (contact_button, main_button_barber, main_button_client)
-from aiogram.types import (ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton)
+
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot=bot)
 db = Database()
 
 
-class Registration(StatesGroup):
-    full_name = State()
-    phone_number = State()
-
-
-class Time(StatesGroup):
-    start_time = State()
-    end_time = State()
-
-
-async def is_user_subscribed(user_id: int):
-    chat_member = await bot.get_chat_member(CHANNEL_ID, user_id)
-    return chat_member.status
-
-async def reminder_function():
-    while True:
-        current_time = datetime.datetime.now()
-        slots = db.get_all_available_time()
-        for slot in slots:
-            start_time_str = slot[0]
-            start_time = datetime.datetime.strptime(start_time_str, '%H:%M')
-            if start_time - current_time <= datetime.timedelta(minutes=10):
-                await bot.send_message(ADMIN,
-                                       f"Напоминание: у вас забронировано время на "
-                                       f"{start_time_str}")
-        await asyncio.sleep(60)  # Check every minute
+class AddProduct(StatesGroup):
+    name = State()
+    price = State()
+    image = State()
 
 
 @dp.message(filters.Command("start"))
-async def start_function(message: types.Message, state: FSMContext):
-    is_subscribed = await is_user_subscribed(user_id=message.from_user.id)
-    if is_subscribed == "left":
-        await message.answer("Если вы не подпишитесь я не буду работать :))")
-        return
-
-    user_check = db.check_user(message.from_user.id)
-    if user_check is None:
-        await state.set_state(Registration.full_name)
-        await message.answer("Привет дорогой человек, отправьте фамилию и имя")
-    else:
-        if message.from_user.id == ADMIN:
-            await message.answer("С возвращением", reply_markup=main_button_barber)
-        else:
-            await message.answer('С возвращением', reply_markup=main_button_client)
+async def start_function(message: types.Message):
+    db.create_table_product()
+    await message.answer("Yo what's up nigga?",
+                         reply_markup=add_button)
 
 
-@dp.message(Registration.full_name)
-async def full_name_function(message: types.Message, state: FSMContext):
-    full_name = message.text
-    await state.update_data(full_name=full_name)
-    await state.set_state(Registration.phone_number)
-    await message.answer("Отлично, теперь отправь мне свой номер", reply_markup=contact_button)
+@dp.message(F.text == "Добавить товар 🦍")
+async def add_function(message: types.Message, state: FSMContext):
+    await state.set_state(AddProduct.name)
+    await message.answer("Введите название товара")
 
 
-@dp.message(Registration.phone_number)
-async def phone_number_function(message: types.Message, state: FSMContext):
-    phone_number = message.contact.phone_number
+@dp.message(F.text == "Посмотреть все товары")
+async def add_function(message: types.Message):
+    data = db.get_products()
+    await message.answer(f"{data}")
+
+
+@dp.message(AddProduct.name)
+async def name_function(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(AddProduct.price)
+    await message.answer("Введите цену товара")
+
+
+@dp.message(AddProduct.price)
+async def name_function(message: types.Message, state: FSMContext):
+    await state.update_data(price=message.text)
+    await state.set_state(AddProduct.image)
+    await message.answer("Отправьте картинку товара")
+
+
+@dp.message(AddProduct.image)
+async def name_function(message: types.Message, state: FSMContext):
+    image = message.photo[0].file_id
+    await state.update_data(image=image)
+
     data = await state.get_data()
-    db.add_user(id=message.from_user.id, full_name=data['full_name'], phone_number=phone_number)
 
-    await state.update_data(phone_number=phone_number)
-    await state.clear()
+    db.add_product(data['name'], data['price'], data['image'])
 
-    if message.from_user.id == ADMIN:
-        await message.answer("Отлично, мы сохранили ваши данные", reply_markup=main_button_barber)
-    else:
-        await message.answer("Отлично, мы сохранили ваши данные", reply_markup=ReplyKeyboardRemove())
-
-
-@dp.message(F.text == "Открыть новый слот")
-async def slot_function(message: types.Message, state: FSMContext):
-    if message.from_user.id == ADMIN:
-        await message.answer("Отправьте время когда вы будете свободны")
-        await state.set_state(Time.start_time)
-    else:
-        await message.answer("Вы кто такие, мы вас не звали")
-
-
-@dp.message(Time.start_time)
-async def start_time_function(message: types.Message, state: FSMContext):
-    start_time = message.text
-    await state.update_data(start_time=start_time)
-    await state.set_state(Time.end_time)
-    await message.answer("До скольких вы будете свободны для одного клиента")
-
-
-@dp.message(Time.end_time)
-async def end_time_function(message: types.Message, state: FSMContext):
-    end_time = message.text
-    await state.update_data(end_time=end_time)
-    await message.answer("Отлично, мы открыли новый слот!")
-    data = await state.get_data()
-    db.add_time(start_time=data["start_time"], end_time=data["end_time"])
+    await message.answer("Вы успешно отправили товар")
     await state.clear()
 
 
-@dp.message(F.text == "Забронировать место")
-async def book_slot_function(message: types.Message):
-    all_slots = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
-    slots = db.get_all_available_time()
-    for slot in slots:
-        data = [KeyboardButton(text=f"{slot[0]} - {slot[1]}")]
-        all_slots.keyboard.append(data)
-    all_slots.keyboard.append([KeyboardButton(text="Назад")])
-    await message.answer("Выберите время когда вам будет удобно", reply_markup=all_slots)
-
-
-@dp.message(F.text == "Назад")
-async def back_function(message: types.Message):
-    await message.answer("Вы вернулись назад", reply_markup=main_button_client)
-
-
-@dp.message(F.text == "Получить локацию")
-async def location_function(message: types.Message):
-    await message.answer_location(41.2722, 69.2049)
-
-
-@dp.message(F.text)
-async def button_function(message: types.Message):
-    data = message.text.split()
-    if data:
-        start_time = data[0]
-        end_time = data[2]
-        db.book_slot(start_time, end_time)
-        await message.answer(f"Вы забронировали это время: {start_time} - {end_time}", reply_markup=main_button_client)
-    else:
-        await message.answer("Нет мест")
 
 
 async def main():
-    # Create a task for the reminder function
-    asyncio.create_task(reminder_function())
-    # Start polling with the dispatcher
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
